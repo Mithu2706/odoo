@@ -199,3 +199,19 @@ class BillingObligation(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    user_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    details: Mapped[str] = mapped_column(String(1000), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+

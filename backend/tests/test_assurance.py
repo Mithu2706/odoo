@@ -174,3 +174,96 @@ def test_assurance_workspace_isolation(client):
     # Trying to retry an obligation from another workspace should 404
     r = client.post(f"/api/assurance/obligations/{ob_id}/retry")
     assert r.status_code == 404
+
+
+def test_customer_portal_and_subscription_lifecycle(client):
+    demo(client, role="admin")
+    # Get an available plan and product
+    plans = records(client, "plans")
+    products = records(client, "products")
+    plan = next((p for p in plans if p.get("minimum_quantity", 1) <= 1), plans[0])
+    plan_id = plan["id"]
+    qty = max(plan.get("minimum_quantity", 1), 1)
+    prod_id = products[0]["id"]
+
+    # Admin creates customer record in organization workspace
+    c = client.post(
+        "/api/customers",
+        json={"name": "Portal Customer", "email": "portal@example.com", "company": "Self Co"},
+    ).json()
+
+    # Admin provisions portal account for that customer
+    account_data = {
+        "name": "Portal Customer",
+        "email": "portal@example.com",
+        "password": "StrongPassword!2026",
+    }
+    client.post(f"/api/customers/{c['id']}/account", json=account_data)
+
+    # Customer logs in
+    client.post("/api/auth/logout")
+    login_res = client.post(
+        "/api/auth/login",
+        json={"email": account_data["email"], "password": account_data["password"]},
+    )
+    assert login_res.status_code == 200
+
+    # Customer subscribes via self-service endpoint
+    sub_res = client.post(
+        "/api/subscriptions/subscribe",
+        json={"plan_id": plan_id, "product_id": prod_id, "quantity": qty},
+    )
+    assert sub_res.status_code == 201
+    sub = sub_res.json()
+    assert sub["status"] == "active"
+
+    # Customer pauses their subscription
+    pause_res = client.patch(f"/api/subscriptions/{sub['id']}/status", json={"status": "paused"})
+    assert pause_res.status_code == 200
+    assert pause_res.json()["status"] == "paused"
+
+    # Customer resumes their subscription
+    resume_res = client.patch(f"/api/subscriptions/{sub['id']}/status", json={"status": "active"})
+    assert resume_res.status_code == 200
+    assert resume_res.json()["status"] == "active"
+
+    # Customer cancels (closes) their subscription
+    close_res = client.patch(f"/api/subscriptions/{sub['id']}/status", json={"status": "closed"})
+    assert close_res.status_code == 200
+    assert close_res.json()["status"] == "closed"
+
+
+def test_calculation_receipt_and_reliability_testing_center(client):
+    demo(client, role="admin")
+    invs = records(client, "invoices")
+    assert len(invs) > 0, "Demo should seed sample invoices"
+    target_inv = invs[0]
+
+    # Test calculation receipt endpoint
+    receipt_res = client.get(f"/api/invoices/{target_inv['id']}/receipt")
+    assert receipt_res.status_code == 200
+    receipt = receipt_res.json()
+    assert receipt["reconciled"] is True
+    assert "reconciliation_formula" in receipt
+    assert float(receipt["subtotal"]) + float(receipt["tax"]) == float(receipt["total"])
+
+    # Test reliability testing center scenarios
+    scenarios = [
+        "scheduler_duplicate_execution",
+        "simulate_billing_failure",
+        "delayed_invoice_detection",
+        "unauthorized_customer_barrier",
+    ]
+    for sc in scenarios:
+        res = client.post("/api/assurance/test-scenario", json={"scenario": sc})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert len(data["findings"]) > 0
+
+    # Verify audit logs created
+    audit_res = client.get("/api/records/audit_logs")
+    assert audit_res.status_code == 200
+    logs = audit_res.json()
+    assert len(logs) > 0, "Audit logs should record reliability events and lifecycle changes"
+
