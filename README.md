@@ -6,10 +6,18 @@ Automate recurring billing, manage subscriptions, and protect recurring revenue.
 
 Official repository: [Mithu2706/odoo](https://github.com/Mithu2706/odoo)
 
-**Status:** Phase 1 core workflow locally verified (9 backend tests and 6 browser tests passed; one PostgreSQL concurrency test skipped). No public deployment or GitHub push has been performed. A deployed demo URL is not available yet.
+**Status:** Phase 2 (Billing Automation & Assurance) locally verified with 12 backend tests passed and frontend production build verified.
 
-## Implemented Phase 1 features
+## Implemented Features
 
+### Phase 2: Billing Automation & Assurance (New)
+- **Billing Obligation Ledger**: `BillingObligation` model tracking subscription cycles (`pending`, `processing`, `invoiced`, `failed`, `skipped`) with database uniqueness constraint `uq_obligation_period` preventing duplicate cycles.
+- **Billing Assurance Monitor**: Real-time coverage dashboard metrics (`total_expected`, `successfully_invoiced`, `missing_invoices`, `delayed_invoices`, `failed_attempts`, `duplicates_prevented`).
+- **Automated Recurring Billing**: Safe, idempotent background scheduler (`POST /api/assurance/scheduler/run`) claiming due obligations and generating invoices using core financial calculations with 0 duplicate invoices on repeated executions.
+- **Failure Recovery & Retry Action**: Authorized retry endpoint (`POST /api/assurance/obligations/{id}/retry`) with attempt counters and failure error logging.
+- **Frontend Dashboard Page**: Dedicated "Billing Assurance" panel for Admin and Staff with summary cards, full ledger table, filters, and manual run/retry triggers. Strictly forbidden for Customer role.
+
+### Phase 1: Core Subscription & Billing Foundation
 - Customer registration and login, Argon2 password hashes, HttpOnly cookie sessions, unique case-normalized emails and password validation.
 - Admin, Staff and Customer permissions enforced by the API; customers see only their own records. Admin-only staff provisioning.
 - Customer records; product creation, editing and archiving; variants with additional pricing.
@@ -18,10 +26,8 @@ Official repository: [Mithu2706/odoo](https://github.com/Mithu2706/odoo)
 - Next-due-cycle invoice generation, database duplicate prevention, invoice confirmation and printing.
 - Partial and full payments, overpayment rejection, request idempotency and paid/balance status tracking.
 - Database-backed revenue totals, payment history, overdue invoices and upcoming billing visibility.
-- Responsive dark interface with accessible dialogs, loading/error states and paginated records.
+- Responsive interface with accessible dialogs, loading/error states and paginated records.
 - One-click Admin, Staff and Customer demos. Every entry creates its own sample workspace; demo data cannot access production workspaces.
-
-**Important distinctions:** billing generation is manual in Phase 1, not a running background scheduler. Payment recording does not charge cards or move money. The revenue protection panel highlights saved records; it does not send reminders or make predictions.
 
 ## Stack and layout
 
