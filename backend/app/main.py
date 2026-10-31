@@ -1475,6 +1475,470 @@ def test_scenario(
     return report
 
 
+@app.get("/api/assurance/leakage")
+def revenue_leakage_analysis(u: User = Depends(staff), s: Session = Depends(db)):
+    """Comprehensive Revenue Leakage Analysis detecting unbilled cycles, overdue cash, and math discrepancies."""
+    today = billing_today()
+    issues = []
+    total_leakage = Decimal("0.00")
+    unbilled_count = 0
+    overdue_count = 0
+    discrepancy_count = 0
+
+    # 1. Detect unbilled obligations (expected invoices not generated)
+    q_obs = (
+        select(BillingObligation)
+        .where(
+            BillingObligation.workspace_id == u.workspace_id,
+            BillingObligation.due_date <= today,
+            BillingObligation.status.in_(["pending", "processing", "failed"]),
+            BillingObligation.invoice_id.is_(None),
+        )
+        .order_by(BillingObligation.due_date)
+    )
+    for ob in s.scalars(q_obs):
+        sub = s.get(Subscription, ob.subscription_id)
+        cust = s.get(Customer, sub.customer_id) if sub else None
+        
+        # Calculate expected cycle value
+        exp_amount = Decimal("0.00")
+        if sub:
+            exp_amount = sub.plan_price
+            items = list(s.scalars(select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)))
+            for it in items:
+                exp_amount += it.unit_price * it.quantity
+            tax = (exp_amount * Decimal("0.18")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            exp_amount += tax
+
+        days_past = (today - ob.due_date).days
+        severity = "critical" if days_past > 7 else ("high" if days_past > 0 else "medium")
+        total_leakage += exp_amount
+        unbilled_count += 1
+
+        issues.append({
+            "id": f"leak-ob-{ob.id[:8]}",
+            "type": "unbilled_obligation",
+            "title": "Scheduled Billing Cycle Not Invoiced",
+            "customer_name": cust.name if cust else "Unknown Customer",
+            "customer_id": cust.id if cust else None,
+            "subscription_number": sub.number if sub else ob.subscription_id[:8],
+            "subscription_id": sub.id if sub else ob.subscription_id,
+            "expected_amount": str(money(exp_amount)),
+            "actual_amount": "0.00",
+            "difference": str(money(exp_amount)),
+            "detection_date": str(today),
+            "due_date": str(ob.due_date),
+            "severity": severity,
+            "recommended_action": "Execute Billing Scheduler or retry obligation in Recovery Console",
+            "resolution_status": "open",
+        })
+
+    # 2. Detect active subscriptions with no pending or future obligations
+    active_subs = list(
+        s.scalars(
+            select(Subscription).where(
+                Subscription.workspace_id == u.workspace_id,
+                Subscription.status == "active",
+            )
+        )
+    )
+    for sub in active_subs:
+        has_future_ob = s.scalar(
+            select(BillingObligation).where(
+                BillingObligation.subscription_id == sub.id,
+                BillingObligation.due_date >= today,
+            )
+        )
+        if not has_future_ob:
+            cust = s.get(Customer, sub.customer_id)
+            exp_amount = sub.plan_price
+            items = list(s.scalars(select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)))
+            for it in items:
+                exp_amount += it.unit_price * it.quantity
+            tax = (exp_amount * Decimal("0.18")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            exp_amount += tax
+            
+            total_leakage += exp_amount
+            unbilled_count += 1
+            issues.append({
+                "id": f"leak-sub-{sub.id[:8]}",
+                "type": "active_sub_missing_obligation",
+                "title": "Active Contract Without Scheduled Billing Obligation",
+                "customer_name": cust.name if cust else "Unknown Customer",
+                "customer_id": cust.id if cust else None,
+                "subscription_number": sub.number,
+                "subscription_id": sub.id,
+                "expected_amount": str(money(exp_amount)),
+                "actual_amount": "0.00",
+                "difference": str(money(exp_amount)),
+                "detection_date": str(today),
+                "due_date": str(sub.next_billing),
+                "severity": "critical",
+                "recommended_action": "Synchronize obligation ledger for subscription",
+                "resolution_status": "open",
+            })
+
+    # 3. Detect overdue receivables beyond due date
+    q_invs = (
+        select(Invoice)
+        .where(
+            Invoice.workspace_id == u.workspace_id,
+            Invoice.status.in_(["confirmed", "partial"]),
+            Invoice.due_date < today,
+        )
+        .order_by(Invoice.due_date)
+    )
+    for inv in s.scalars(q_invs):
+        paid = s.scalar(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == inv.id)
+        ) or Decimal("0.00")
+        balance = inv.total - paid
+        if balance > 0:
+            cust = s.get(Customer, inv.customer_id)
+            days_overdue = (today - inv.due_date).days
+            severity = "critical" if days_overdue > 30 else "high"
+            total_leakage += balance
+            overdue_count += 1
+            issues.append({
+                "id": f"leak-inv-{inv.id[:8]}",
+                "type": "overdue_receivable",
+                "title": f"Unpaid Receivable ({days_overdue} days overdue)",
+                "customer_name": cust.name if cust else "Unknown Customer",
+                "customer_id": cust.id if cust else None,
+                "subscription_number": inv.number,
+                "subscription_id": inv.subscription_id,
+                "expected_amount": str(money(inv.total)),
+                "actual_amount": str(money(paid)),
+                "difference": str(money(balance)),
+                "detection_date": str(today),
+                "due_date": str(inv.due_date),
+                "severity": severity,
+                "recommended_action": "Dispatch automated payment reminder and escalate to collections",
+                "resolution_status": "open",
+            })
+
+    # 4. Detect calculation inconsistencies (subtotal + tax != total)
+    q_all_invs = select(Invoice).where(Invoice.workspace_id == u.workspace_id)
+    for inv in s.scalars(q_all_invs):
+        expected_total = inv.subtotal + inv.tax
+        diff = abs(inv.total - expected_total)
+        if diff > Decimal("0.01"):
+            cust = s.get(Customer, inv.customer_id)
+            total_leakage += diff
+            discrepancy_count += 1
+            issues.append({
+                "id": f"leak-math-{inv.id[:8]}",
+                "type": "calculation_inconsistency",
+                "title": "Invoice Calculation Math Inconsistency",
+                "customer_name": cust.name if cust else "Unknown Customer",
+                "customer_id": cust.id if cust else None,
+                "subscription_number": inv.number,
+                "subscription_id": inv.subscription_id,
+                "expected_amount": str(money(expected_total)),
+                "actual_amount": str(money(inv.total)),
+                "difference": str(money(diff)),
+                "detection_date": str(today),
+                "due_date": str(inv.due_date),
+                "severity": "critical",
+                "recommended_action": "Review Calculation Receipt and post adjusting ledger entry",
+                "resolution_status": "open",
+            })
+
+    # Sort issues by severity: critical -> high -> medium -> low
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    issues.sort(key=lambda x: severity_order.get(x["severity"], 4))
+
+    return {
+        "total_leakage_detected": str(money(total_leakage)),
+        "unbilled_cycles_count": unbilled_count,
+        "overdue_receivables_count": overdue_count,
+        "discrepancies_count": discrepancy_count,
+        "total_issues": len(issues),
+        "issues": issues,
+    }
+
+
+@app.get("/api/assurance/reconciliation")
+def billing_reconciliation(u: User = Depends(staff), s: Session = Depends(db)):
+    """Full 4-way billing reconciliation ledger comparing obligations, invoices, payments, and balances."""
+    q_obs = (
+        select(BillingObligation)
+        .where(BillingObligation.workspace_id == u.workspace_id)
+        .order_by(BillingObligation.due_date.desc())
+    )
+    records = []
+    reconciled_count = 0
+    pending_collection_count = 0
+    unfulfilled_count = 0
+    total_balance_outstanding = Decimal("0.00")
+
+    for ob in s.scalars(q_obs):
+        sub = s.get(Subscription, ob.subscription_id)
+        cust = s.get(Customer, sub.customer_id) if sub else None
+        inv = s.get(Invoice, ob.invoice_id) if ob.invoice_id else None
+        
+        paid = Decimal("0.00")
+        total = Decimal("0.00")
+        balance = Decimal("0.00")
+        
+        if inv:
+            total = inv.total
+            paid = s.scalar(
+                select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == inv.id)
+            ) or Decimal("0.00")
+            balance = total - paid
+            total_balance_outstanding += balance
+
+            if balance == Decimal("0.00"):
+                status = "fully_reconciled"
+                explanation = "Cycle invoiced and cash fully reconciled (zero balance)."
+                action = "Reconciliation Verified"
+                reconciled_count += 1
+            elif paid > Decimal("0.00"):
+                status = "partially_reconciled"
+                explanation = f"Partial payment received ({paid}/{total}). Outstanding: ₹{balance}."
+                action = "Record Balance Payment"
+                pending_collection_count += 1
+            else:
+                status = "pending_collection"
+                explanation = f"Invoice confirmed. Awaiting customer payment of ₹{total}."
+                action = "Collect Payment"
+                pending_collection_count += 1
+        else:
+            status = "unfulfilled_obligation"
+            explanation = "Obligation scheduled but invoice generation has not completed."
+            action = "Generate Invoice"
+            unfulfilled_count += 1
+
+        records.append({
+            "obligation_id": ob.id,
+            "subscription_number": sub.number if sub else ob.subscription_id[:8],
+            "customer_name": cust.name if cust else "Unknown Customer",
+            "due_date": str(ob.due_date),
+            "period_start": str(ob.period_start),
+            "period_end": str(ob.period_end),
+            "obligation_status": ob.status,
+            "invoice_number": inv.number if inv else None,
+            "invoice_total": str(money(total)) if inv else None,
+            "invoice_status": inv.status if inv else None,
+            "payments_recorded": str(money(paid)),
+            "outstanding_balance": str(money(balance)),
+            "reconciliation_status": status,
+            "delta_amount": str(money(balance if inv else Decimal("0.00"))),
+            "explanation": explanation,
+            "traceable_action": action,
+        })
+
+    total_obs = len(records)
+    reconciled_rate = f"{round((reconciled_count / total_obs) * 100, 1)}%" if total_obs > 0 else "100.0%"
+
+    return {
+        "total_obligations": total_obs,
+        "fully_reconciled_count": reconciled_count,
+        "pending_collection_count": pending_collection_count,
+        "unfulfilled_count": unfulfilled_count,
+        "total_outstanding_balance": str(money(total_balance_outstanding)),
+        "reconciliation_rate": reconciled_rate,
+        "records": records,
+    }
+
+
+@app.get("/api/analytics/renewals")
+def renewal_intelligence(u: User = Depends(staff), s: Session = Depends(db)):
+    """Renewal forecasting cohorts (7d, 30d, 60d) and pipeline intelligence."""
+    today = billing_today()
+    q_subs = (
+        select(Subscription)
+        .where(
+            Subscription.workspace_id == u.workspace_id,
+            Subscription.status == "active",
+        )
+        .order_by(Subscription.next_billing)
+    )
+
+    c7_date = today + timedelta(days=7)
+    c30_date = today + timedelta(days=30)
+    c60_date = today + timedelta(days=60)
+
+    c7_subs, c30_subs, c60_subs = [], [], []
+    c7_vol, c30_vol, c60_vol = Decimal("0.00"), Decimal("0.00"), Decimal("0.00")
+    pipeline = []
+
+    for sub in s.scalars(q_subs):
+        plan = s.get(Plan, sub.plan_id)
+        cust = s.get(Customer, sub.customer_id)
+        
+        # Calculate expected cycle value
+        val = sub.plan_price
+        items = list(s.scalars(select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)))
+        for it in items:
+            val += it.unit_price * it.quantity
+        tax = (val * Decimal("0.18")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        cycle_val = val + tax
+
+        urgency = "pipeline"
+        action = "Scheduled Renewal Pipeline"
+        if sub.next_billing <= c7_date:
+            c7_subs.append(sub)
+            c7_vol += cycle_val
+            urgency = "urgent"
+            action = "Dispatch Imminent Renewal Notice"
+        elif sub.next_billing <= c30_date:
+            c30_subs.append(sub)
+            c30_vol += cycle_val
+            urgency = "upcoming"
+            action = "Quarterly Account Review"
+        elif sub.next_billing <= c60_date:
+            c60_subs.append(sub)
+            c60_vol += cycle_val
+
+        if sub.next_billing <= c60_date:
+            pipeline.append({
+                "subscription_id": sub.id,
+                "subscription_number": sub.number,
+                "customer_name": cust.name if cust else "Unknown Customer",
+                "customer_email": cust.email if cust else None,
+                "plan_name": plan.name if plan else "Standard Plan",
+                "interval": sub.interval,
+                "renewal_date": str(sub.next_billing),
+                "days_until_renewal": (sub.next_billing - today).days,
+                "projected_value": str(money(cycle_val)),
+                "urgency": urgency,
+                "recommended_action": action,
+            })
+
+    return {
+        "cohorts": {
+            "within_7_days": {
+                "count": len(c7_subs),
+                "projected_value": str(money(c7_vol)),
+            },
+            "within_30_days": {
+                "count": len(c30_subs) + len(c7_subs),
+                "projected_value": str(money(c30_vol + c7_vol)),
+            },
+            "within_60_days": {
+                "count": len(c60_subs) + len(c30_subs) + len(c7_subs),
+                "projected_value": str(money(c60_vol + c30_vol + c7_vol)),
+            },
+        },
+        "pipeline": pipeline,
+    }
+
+
+@app.get("/api/analytics/summary")
+def financial_analytics_summary(u: User = Depends(staff), s: Session = Depends(db)):
+    """Comprehensive GAAP-separated financial metrics with explicit definitions."""
+    today = billing_today()
+    
+    # 1. Invoiced revenue (confirmed or paid)
+    invoiced_revenue = s.scalar(
+        select(func.coalesce(func.sum(Invoice.total), 0)).where(
+            Invoice.workspace_id == u.workspace_id,
+            Invoice.status.in_(["confirmed", "paid"]),
+        )
+    ) or Decimal("0.00")
+
+    # 2. Collected cash (all payments)
+    collected_cash = s.scalar(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.workspace_id == u.workspace_id
+        )
+    ) or Decimal("0.00")
+
+    # 3. Outstanding receivables
+    outstanding_receivables = max(invoiced_revenue - collected_cash, Decimal("0.00"))
+
+    # 4. MRR & ARR
+    mrr = Decimal("0.00")
+    active_subs = list(
+        s.scalars(
+            select(Subscription).where(
+                Subscription.workspace_id == u.workspace_id,
+                Subscription.status == "active",
+            )
+        )
+    )
+    for sub in active_subs:
+        items = list(s.scalars(select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)))
+        val = sub.plan_price
+        for it in items:
+            val += it.unit_price * it.quantity
+        if sub.interval == "daily":
+            mrr += val * Decimal(30)
+        elif sub.interval == "weekly":
+            mrr += val * Decimal(4)
+        elif sub.interval == "monthly":
+            mrr += val
+        elif sub.interval == "yearly":
+            mrr += val / Decimal(12)
+
+    arr = mrr * 12
+
+    # 5. Churn & Renewal Rates
+    total_subs = s.scalar(
+        select(func.count()).select_from(
+            select(Subscription).where(Subscription.workspace_id == u.workspace_id).subquery()
+        )
+    ) or 0
+    closed_subs = s.scalar(
+        select(func.count()).select_from(
+            select(Subscription).where(
+                Subscription.workspace_id == u.workspace_id,
+                Subscription.status == "closed",
+            ).subquery()
+        )
+    ) or 0
+    churn_rate = f"{round((closed_subs / total_subs) * 100, 1)}%" if total_subs > 0 else "0.0%"
+
+    total_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(BillingObligation.workspace_id == u.workspace_id).subquery()
+        )
+    ) or 0
+    invoiced_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(
+                BillingObligation.workspace_id == u.workspace_id,
+                BillingObligation.status == "invoiced",
+            ).subquery()
+        )
+    ) or 0
+    failed_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(
+                BillingObligation.workspace_id == u.workspace_id,
+                BillingObligation.status == "failed",
+            ).subquery()
+        )
+    ) or 0
+
+    renewal_rate = f"{round((invoiced_obs / total_obs) * 100, 1)}%" if total_obs > 0 else "100.0%"
+    processed_total = invoiced_obs + failed_obs
+    billing_success_rate = f"{round((invoiced_obs / processed_total) * 100, 1)}%" if processed_total > 0 else "100.0%"
+
+    return {
+        "mrr": str(money(mrr)),
+        "arr": str(money(arr)),
+        "invoiced_revenue": str(money(invoiced_revenue)),
+        "collected_cash": str(money(collected_cash)),
+        "outstanding_receivables": str(money(outstanding_receivables)),
+        "active_contracts": len(active_subs),
+        "total_contracts": total_subs,
+        "churn_rate": churn_rate,
+        "renewal_rate": renewal_rate,
+        "billing_success_rate": billing_success_rate,
+        "definitions": {
+            "mrr": "Monthly Recurring Revenue: The predictable recurring revenue normalized to a monthly cadence from active contracts.",
+            "arr": "Annual Recurring Revenue: Annualized recurring revenue run-rate (MRR × 12).",
+            "invoiced_revenue": "Invoiced Revenue: Total GAAP-recognized billed amounts across all confirmed and paid invoices.",
+            "collected_cash": "Collected Cash: Net reconciled cash received and cleared in accounting payments.",
+            "outstanding_receivables": "Outstanding Receivables: Unpaid invoiced balances awaiting cash collection.",
+            "billing_success_rate": "Billing Success Rate: Percentage of processed billing obligations invoiced with zero failures.",
+        },
+    }
+
+
 
 class DemoIn(BaseModel):
     role: Literal["admin", "staff", "customer"] = "admin"
