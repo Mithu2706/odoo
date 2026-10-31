@@ -23,6 +23,7 @@ from .models import (
     Invoice,
     InvoiceItem,
     Payment,
+    BillingObligation,
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./brightloop.db")
@@ -441,6 +442,8 @@ def transition(
     if data.status not in allowed[sub.status]:
         raise HTTPException(409, "Invalid lifecycle transition")
     sub.status = data.status
+    if sub.status == "active":
+        sync_subscription_obligations(s, sub)
     s.commit()
     return serialize(sub)
 
@@ -467,33 +470,66 @@ class BillIn(BaseModel):
     cycle_date: date
 
 
-@app.post("/api/subscriptions/{ident}/invoices")
-def generate(
-    ident: str, data: BillIn, u: User = Depends(staff), s: Session = Depends(db)
-):
-    sub = own(s, Subscription, ident, u)
-    sub = s.scalar(
-        select(Subscription)
-        .where(Subscription.id == sub.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    existing = s.scalar(
-        select(Invoice).where(
-            Invoice.subscription_id == ident, Invoice.cycle_date == data.cycle_date
-        )
-    )
-    if existing:
-        return serialize(existing)
+def sync_subscription_obligations(s: Session, sub: Subscription) -> list[BillingObligation]:
+    """Ensures billing obligations exist for an active subscription up to and including its next_billing."""
     if sub.status != "active":
-        raise HTTPException(409, "Activate the subscription before billing")
-    if data.cycle_date != sub.next_billing or data.cycle_date > billing_today():
-        raise HTTPException(
-            409, "Bill the next due cycle; future billing is unavailable"
+        return []
+    
+    current_due = sub.next_billing
+    period_start = sub.start_date
+    obligations = []
+    
+    # Generate obligations from start_date up to next_billing
+    while period_start <= current_due:
+        period_end = next_cycle(period_start, sub.interval, sub.anchor_day)
+        existing = s.scalar(
+            select(BillingObligation).where(
+                BillingObligation.subscription_id == sub.id,
+                BillingObligation.period_start == period_start,
+                BillingObligation.period_end == period_end,
+            )
         )
+        if not existing:
+            ob = BillingObligation(
+                workspace_id=sub.workspace_id,
+                subscription_id=sub.id,
+                period_start=period_start,
+                period_end=period_end,
+                due_date=period_start,
+                status="pending",
+                attempt_count=0,
+            )
+            s.add(ob)
+            obligations.append(ob)
+        period_start = period_end
+    
+    return obligations
+
+
+def bill_subscription_core(s: Session, sub: Subscription, cycle_date: date, obligation: BillingObligation | None = None) -> Invoice:
+    """Core billing engine that creates an invoice using existing calculations, updates obligation, and advances next_billing."""
+    existing_inv = s.scalar(
+        select(Invoice).where(
+            Invoice.subscription_id == sub.id,
+            Invoice.cycle_date == cycle_date,
+        )
+    )
+    if existing_inv:
+        if obligation and obligation.status != "invoiced":
+            obligation.invoice_id = existing_inv.id
+            obligation.status = "invoiced"
+            obligation.last_error = None
+            s.flush()
+        return existing_inv
+
+    if sub.status != "active":
+        raise ValueError("Activate the subscription before billing")
+    if cycle_date != sub.next_billing or cycle_date > billing_today():
+        raise ValueError("Bill the next due cycle; future billing is unavailable")
+
     lines = list(
         s.scalars(
-            select(SubscriptionItem).where(SubscriptionItem.subscription_id == ident)
+            select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)
         )
     )
     subtotal = money(
@@ -501,18 +537,19 @@ def generate(
     )
     tax = money(subtotal * sub.tax_percent / 100)
     inv = Invoice(
-        workspace_id=u.workspace_id,
+        workspace_id=sub.workspace_id,
         number="INV-" + secrets.token_hex(5).upper(),
         subscription_id=sub.id,
         customer_id=sub.customer_id,
-        cycle_date=data.cycle_date,
-        due_date=data.cycle_date + timedelta(days=14),
+        cycle_date=cycle_date,
+        due_date=cycle_date + timedelta(days=14),
         subtotal=subtotal,
         tax=tax,
         total=subtotal + tax,
     )
     s.add(inv)
     s.flush()
+
     for x in lines:
         s.add(
             InvoiceItem(
@@ -531,9 +568,89 @@ def generate(
                 unit_price=sub.plan_price,
             )
         )
+
     sub.next_billing = next_cycle(sub.next_billing, sub.interval, sub.anchor_day)
+
+    # Link to obligation
+    if not obligation:
+        # Check if an obligation exists for this period
+        period_end = sub.next_billing
+        obligation = s.scalar(
+            select(BillingObligation).where(
+                BillingObligation.subscription_id == sub.id,
+                BillingObligation.period_start == cycle_date,
+            )
+        )
+        if not obligation:
+            obligation = BillingObligation(
+                workspace_id=sub.workspace_id,
+                subscription_id=sub.id,
+                period_start=cycle_date,
+                period_end=period_end,
+                due_date=cycle_date,
+                status="pending",
+                attempt_count=0,
+            )
+            s.add(obligation)
+            s.flush()
+
+    obligation.invoice_id = inv.id
+    obligation.status = "invoiced"
+    obligation.attempt_count += 1
+    obligation.last_error = None
+    s.flush()
+
+    # Pre-create the next obligation for this subscription
+    next_start = sub.next_billing
+    next_end = next_cycle(next_start, sub.interval, sub.anchor_day)
+    existing_next = s.scalar(
+        select(BillingObligation).where(
+            BillingObligation.subscription_id == sub.id,
+            BillingObligation.period_start == next_start,
+            BillingObligation.period_end == next_end,
+        )
+    )
+    if not existing_next:
+        s.add(
+            BillingObligation(
+                workspace_id=sub.workspace_id,
+                subscription_id=sub.id,
+                period_start=next_start,
+                period_end=next_end,
+                due_date=next_start,
+                status="pending",
+                attempt_count=0,
+            )
+        )
+
+    return inv
+
+
+@app.post("/api/subscriptions/{ident}/invoices")
+def generate(
+    ident: str, data: BillIn, u: User = Depends(staff), s: Session = Depends(db)
+):
+    sub = own(s, Subscription, ident, u)
+    sub = s.scalar(
+        select(Subscription)
+        .where(Subscription.id == sub.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    existing = s.scalar(
+        select(Invoice).where(
+            Invoice.subscription_id == ident, Invoice.cycle_date == data.cycle_date
+        )
+    )
+    if existing:
+        return serialize(existing)
+
     try:
+        inv = bill_subscription_core(s, sub, data.cycle_date)
         s.commit()
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(409, str(e))
     except IntegrityError:
         s.rollback()
         inv = s.scalar(
@@ -543,6 +660,7 @@ def generate(
         )
         if not inv:
             raise HTTPException(409, "Billing conflict; retry")
+
     return serialize(inv)
 
 
@@ -612,6 +730,7 @@ TABLES = {
     "subscriptions": Subscription,
     "invoices": Invoice,
     "payments": Payment,
+    "billing_obligations": BillingObligation,
 }
 
 
@@ -628,7 +747,9 @@ def records(
     cls = TABLES[kind]
     q = select(cls).where(cls.workspace_id == u.workspace_id)
     if u.role == "customer":
-        if kind == "customers":
+        if kind == "billing_obligations":
+            raise HTTPException(403, "Access to billing assurance is restricted to staff")
+        elif kind == "customers":
             q = q.where(Customer.id == u.customer_id)
         elif kind in ("subscriptions", "invoices"):
             q = q.where(cls.customer_id == u.customer_id)
@@ -646,6 +767,21 @@ def records(
     result = []
     for row in rows:
         item = serialize(row, ("cost_price",) if u.role == "customer" else ())
+        if kind == "billing_obligations":
+            sub = s.get(Subscription, row.subscription_id)
+            if sub:
+                item["subscription_number"] = sub.number
+                item["subscription_status"] = sub.status
+                cust = s.get(Customer, sub.customer_id)
+                if cust:
+                    item["customer_name"] = cust.name
+                    item["customer_email"] = cust.email
+            if row.invoice_id:
+                inv = s.get(Invoice, row.invoice_id)
+                if inv:
+                    item["invoice_number"] = inv.number
+                    item["invoice_total"] = str(inv.total)
+                    item["invoice_status"] = inv.status
         if kind == "products":
             item["variants"] = [
                 serialize(v)
@@ -747,6 +883,229 @@ def dashboard(u: User = Depends(current), s: Session = Depends(db)):
         ],
         "renewals": [serialize(x) for x in upcoming],
     }
+
+
+@app.get("/api/assurance/summary")
+def assurance_summary(u: User = Depends(staff), s: Session = Depends(db)):
+    """Summary metrics for the Billing Assurance monitor."""
+    today = billing_today()
+    q_base = select(BillingObligation).where(
+        BillingObligation.workspace_id == u.workspace_id
+    )
+
+    total_expected = s.scalar(select(func.count()).select_from(q_base.subquery()))
+    successfully_invoiced = s.scalar(
+        select(func.count()).select_from(
+            q_base.where(BillingObligation.status == "invoiced").subquery()
+        )
+    )
+    failed_attempts = s.scalar(
+        select(func.count()).select_from(
+            q_base.where(BillingObligation.status == "failed").subquery()
+        )
+    )
+    # Missing invoices: due_date <= today and status in ('pending', 'processing', 'failed') and invoice_id is null
+    missing_invoices = s.scalar(
+        select(func.count()).select_from(
+            q_base.where(
+                BillingObligation.due_date <= today,
+                BillingObligation.status.in_(["pending", "processing", "failed"]),
+                BillingObligation.invoice_id.is_(None),
+            ).subquery()
+        )
+    )
+    # Delayed invoices: pending or failed with due_date < today
+    delayed_invoices = s.scalar(
+        select(func.count()).select_from(
+            q_base.where(
+                BillingObligation.due_date < today,
+                BillingObligation.status.in_(["pending", "processing", "failed"]),
+            ).subquery()
+        )
+    )
+    # Duplicate attempts prevented: attempts where attempt_count > 1 on invoiced or skipped
+    duplicates_prevented = s.scalar(
+        select(func.count()).select_from(
+            q_base.where(
+                BillingObligation.status == "invoiced",
+                BillingObligation.attempt_count > 1,
+            ).subquery()
+        )
+    )
+
+    return {
+        "total_expected": total_expected or 0,
+        "successfully_invoiced": successfully_invoiced or 0,
+        "missing_invoices": missing_invoices or 0,
+        "delayed_invoices": delayed_invoices or 0,
+        "failed_attempts": failed_attempts or 0,
+        "duplicates_prevented": duplicates_prevented or 0,
+    }
+
+
+def execute_billing_scheduler(s: Session, workspace_id: str) -> dict:
+    """Executes scheduled recurring billing for due obligations in the given workspace."""
+    today = billing_today()
+    
+    # First, make sure any active subscriptions have their obligations synchronized
+    active_subs = list(
+        s.scalars(
+            select(Subscription).where(
+                Subscription.workspace_id == workspace_id,
+                Subscription.status == "active",
+            )
+        )
+    )
+    for sub in active_subs:
+        sync_subscription_obligations(s, sub)
+    s.flush()
+
+    # Find due obligations (due_date <= today and status in 'pending')
+    due_obs = list(
+        s.scalars(
+            select(BillingObligation)
+            .where(
+                BillingObligation.workspace_id == workspace_id,
+                BillingObligation.due_date <= today,
+                BillingObligation.status == "pending",
+            )
+            .order_by(BillingObligation.due_date)
+        )
+    )
+
+    processed = 0
+    invoiced = 0
+    failed = 0
+    duplicates_skipped = 0
+
+    for ob in due_obs:
+        # Safely claim obligation
+        ob = s.scalar(
+            select(BillingObligation)
+            .where(BillingObligation.id == ob.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if ob.status != "pending":
+            continue
+
+        # Check if invoice already exists for this subscription & cycle
+        existing_inv = s.scalar(
+            select(Invoice).where(
+                Invoice.subscription_id == ob.subscription_id,
+                Invoice.cycle_date == ob.period_start,
+            )
+        )
+        if existing_inv:
+            ob.invoice_id = existing_inv.id
+            ob.status = "invoiced"
+            ob.attempt_count += 1
+            ob.last_error = None
+            duplicates_skipped += 1
+            s.flush()
+            continue
+
+        ob.status = "processing"
+        ob.attempt_count += 1
+        s.flush()
+
+        sub = s.scalar(
+            select(Subscription)
+            .where(Subscription.id == ob.subscription_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if not sub or sub.status != "active":
+            ob.status = "failed"
+            ob.last_error = "Subscription is not active"
+            failed += 1
+            s.flush()
+            continue
+
+        try:
+            inv = bill_subscription_core(s, sub, ob.period_start, obligation=ob)
+            invoiced += 1
+            s.flush()
+        except Exception as e:
+            ob.status = "failed"
+            ob.last_error = str(e)[:900]
+            failed += 1
+            s.flush()
+
+        processed += 1
+
+    s.commit()
+    return {
+        "processed": processed,
+        "invoiced": invoiced,
+        "failed": failed,
+        "duplicates_skipped": duplicates_skipped,
+    }
+
+
+@app.post("/api/assurance/scheduler/run")
+def run_scheduler(u: User = Depends(staff), s: Session = Depends(db)):
+    """Trigger the automated recurring billing scheduler for the current workspace."""
+    results = execute_billing_scheduler(s, u.workspace_id)
+    return results
+
+
+@app.post("/api/assurance/obligations/{ident}/retry")
+def retry_obligation(ident: str, u: User = Depends(staff), s: Session = Depends(db)):
+    """Retry a failed billing obligation safely with audit update."""
+    ob = own(s, BillingObligation, ident, u)
+    ob = s.scalar(
+        select(BillingObligation)
+        .where(BillingObligation.id == ob.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+    if ob.status not in ("failed", "pending"):
+        raise HTTPException(
+            409, f"Only failed or pending obligations can be retried (current status: {ob.status})"
+        )
+
+    # Check if an invoice was already generated
+    if ob.invoice_id:
+        existing_inv = s.get(Invoice, ob.invoice_id)
+        if existing_inv:
+            ob.status = "invoiced"
+            s.commit()
+            return serialize(ob)
+
+    sub = s.scalar(
+        select(Subscription)
+        .where(Subscription.id == ob.subscription_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not sub or sub.status != "active":
+        ob.status = "failed"
+        ob.attempt_count += 1
+        ob.last_error = "Subscription is not active"
+        s.commit()
+        raise HTTPException(409, "Subscription must be active to bill")
+
+    ob.status = "processing"
+    ob.attempt_count += 1
+    s.flush()
+
+    try:
+        inv = bill_subscription_core(s, sub, ob.period_start, obligation=ob)
+        s.commit()
+        return serialize(ob)
+    except Exception as e:
+        s.rollback()
+        # Rollback and record the failure
+        ob_fail = s.get(BillingObligation, ident)
+        if ob_fail:
+            ob_fail.status = "failed"
+            ob_fail.attempt_count += 1
+            ob_fail.last_error = str(e)[:900]
+            s.commit()
+        raise HTTPException(409, f"Retry failed: {str(e)}")
+
 
 
 class DemoIn(BaseModel):
@@ -868,6 +1227,31 @@ def demo(data: DemoIn, response: Response, s: Session = Depends(db)):
                 description="Plan fee",
                 quantity=1,
                 unit_price=plan.price,
+            )
+        )
+        ob = BillingObligation(
+            workspace_id=w.id,
+            subscription_id=sub.id,
+            period_start=cycle,
+            period_end=sub.next_billing,
+            due_date=cycle,
+            status="invoiced",
+            invoice_id=inv.id,
+            attempt_count=1,
+            last_error=None,
+        )
+        s.add(ob)
+        # Next upcoming obligation for this subscription
+        next_end = next_cycle(sub.next_billing, sub.interval, sub.anchor_day)
+        s.add(
+            BillingObligation(
+                workspace_id=w.id,
+                subscription_id=sub.id,
+                period_start=sub.next_billing,
+                period_end=next_end,
+                due_date=sub.next_billing,
+                status="pending",
+                attempt_count=0,
             )
         )
         if i == 0:

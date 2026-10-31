@@ -1,0 +1,25 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.DS_Store
+.npm
+npm-debug.log*
+
+# Playwright & Tests
+test-results/
+playwright-report/
+blob-report/

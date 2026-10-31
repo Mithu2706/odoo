@@ -165,3 +165,37 @@ class Payment(Base):
     date: Mapped[date] = mapped_column(Date)
     notes: Mapped[str] = mapped_column(String(1000), default="")
     idempotency_key: Mapped[str] = mapped_column(String(100))
+
+
+class BillingObligation(Base):
+    __tablename__ = "billing_obligations"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "period_start", "period_end", name="uq_obligation_period"
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    subscription_id: Mapped[str] = mapped_column(
+        ForeignKey("subscriptions.id"), index=True
+    )
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", index=True
+    )  # pending, processing, invoiced, failed, skipped
+    invoice_id: Mapped[str | None] = mapped_column(
+        ForeignKey("invoices.id"), nullable=True, index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
