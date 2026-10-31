@@ -1940,6 +1940,275 @@ def financial_analytics_summary(u: User = Depends(staff), s: Session = Depends(d
 
 
 
+class AIAnalystIn(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/ai/analyst")
+def ai_revenue_analyst(data: AIAnalystIn, u: User = Depends(staff), s: Session = Depends(db)):
+    """AI Revenue Analyst connected to verified database records with strict tenant isolation."""
+    today = billing_today()
+    q_str = data.query.strip()
+
+    # 1. Gather verified financial context from DB
+    invoiced_rev = s.scalar(
+        select(func.coalesce(func.sum(Invoice.total), 0)).where(
+            Invoice.workspace_id == u.workspace_id,
+            Invoice.status.in_(["confirmed", "paid"]),
+        )
+    ) or Decimal("0.00")
+
+    collected_cash = s.scalar(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.workspace_id == u.workspace_id
+        )
+    ) or Decimal("0.00")
+
+    outstanding = max(invoiced_rev - collected_cash, Decimal("0.00"))
+
+    # Active subscriptions & MRR
+    active_subs = list(
+        s.scalars(
+            select(Subscription).where(
+                Subscription.workspace_id == u.workspace_id,
+                Subscription.status == "active",
+            )
+        )
+    )
+    mrr = Decimal("0.00")
+    for sub in active_subs:
+        items = list(s.scalars(select(SubscriptionItem).where(SubscriptionItem.subscription_id == sub.id)))
+        val = sub.plan_price + sum((it.unit_price * it.quantity for it in items), Decimal("0.00"))
+        if sub.interval == "yearly":
+            mrr += val / Decimal(12)
+        elif sub.interval == "weekly":
+            mrr += val * Decimal("4.333")
+        elif sub.interval == "daily":
+            mrr += val * Decimal(30)
+        else:
+            mrr += val
+    arr = mrr * 12
+
+    # Overdue invoices
+    overdue_q = (
+        select(Invoice)
+        .where(
+            Invoice.workspace_id == u.workspace_id,
+            Invoice.status.in_(["confirmed", "partial"]),
+            Invoice.due_date < today,
+        )
+        .order_by(Invoice.due_date)
+    )
+    overdue_list = []
+    for inv in s.scalars(overdue_q):
+        paid = s.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == inv.id)) or Decimal("0.00")
+        cust = s.get(Customer, inv.customer_id)
+        overdue_list.append({
+            "invoice_number": inv.number,
+            "customer_name": cust.name if cust else "Unknown Customer",
+            "total": str(money(inv.total)),
+            "paid": str(money(paid)),
+            "balance": str(money(inv.total - paid)),
+            "due_date": str(inv.due_date),
+            "days_overdue": (today - inv.due_date).days,
+        })
+
+    # Renewals due in 30 days
+    c30_date = today + timedelta(days=30)
+    renewal_q = (
+        select(Subscription)
+        .where(
+            Subscription.workspace_id == u.workspace_id,
+            Subscription.status == "active",
+            Subscription.next_billing <= c30_date,
+        )
+        .order_by(Subscription.next_billing)
+    )
+    renewal_list = []
+    for sub in s.scalars(renewal_q):
+        cust = s.get(Customer, sub.customer_id)
+        plan = s.get(Plan, sub.plan_id)
+        renewal_list.append({
+            "subscription_number": sub.number,
+            "customer_name": cust.name if cust else "Unknown Customer",
+            "plan_name": plan.name if plan else "Standard",
+            "interval": sub.interval,
+            "renewal_date": str(sub.next_billing),
+            "days_remaining": (sub.next_billing - today).days,
+        })
+
+    # Missing billing obligations
+    missing_obs_q = (
+        select(BillingObligation)
+        .where(
+            BillingObligation.workspace_id == u.workspace_id,
+            BillingObligation.due_date <= today,
+            BillingObligation.status.in_(["pending", "processing", "failed"]),
+            BillingObligation.invoice_id.is_(None),
+        )
+    )
+    missing_obs = []
+    for ob in s.scalars(missing_obs_q):
+        sub = s.get(Subscription, ob.subscription_id)
+        cust = s.get(Customer, sub.customer_id) if sub else None
+        missing_obs.append({
+            "obligation_id": ob.id[:8],
+            "subscription_number": sub.number if sub else ob.subscription_id[:8],
+            "customer_name": cust.name if cust else "Unknown Customer",
+            "due_date": str(ob.due_date),
+            "status": ob.status,
+            "last_error": ob.last_error,
+        })
+
+    # Billing health metrics
+    total_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(BillingObligation.workspace_id == u.workspace_id).subquery()
+        )
+    ) or 0
+    invoiced_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(
+                BillingObligation.workspace_id == u.workspace_id,
+                BillingObligation.status == "invoiced",
+            ).subquery()
+        )
+    ) or 0
+    failed_obs = s.scalar(
+        select(func.count()).select_from(
+            select(BillingObligation).where(
+                BillingObligation.workspace_id == u.workspace_id,
+                BillingObligation.status == "failed",
+            ).subquery()
+        )
+    ) or 0
+    coverage_pct = f"{round((invoiced_obs / total_obs) * 100, 1)}%" if total_obs > 0 else "100.0%"
+
+    # Deterministic Anomaly Summary
+    anomalies = []
+    if len(missing_obs) > 0:
+        anomalies.append({
+            "type": "unbilled_cycles",
+            "severity": "critical" if any(ob["status"] == "failed" for ob in missing_obs) else "high",
+            "summary": f"{len(missing_obs)} scheduled billing cycle(s) due on or before today have not been invoiced.",
+        })
+    if len(overdue_list) > 0:
+        total_overdue_bal = sum((Decimal(x["balance"]) for x in overdue_list), Decimal("0.00"))
+        anomalies.append({
+            "type": "overdue_receivables",
+            "severity": "high" if any(x["days_overdue"] > 30 for x in overdue_list) else "medium",
+            "summary": f"{len(overdue_list)} confirmed invoice(s) totalling ₹{money(total_overdue_bal)} are past due.",
+        })
+    if failed_obs > 0:
+        anomalies.append({
+            "type": "failed_obligations",
+            "severity": "critical",
+            "summary": f"{failed_obs} obligation retry attempt(s) encountered execution failures and require operator intervention.",
+        })
+
+    database_data = {
+        "revenue": {
+            "invoiced_revenue_inr": str(money(invoiced_rev)),
+            "collected_cash_inr": str(money(collected_cash)),
+            "outstanding_receivables_inr": str(money(outstanding)),
+            "mrr_inr": str(money(mrr)),
+            "arr_inr": str(money(arr)),
+            "active_subscriptions_count": len(active_subs),
+        },
+        "overdue_invoices": overdue_list,
+        "upcoming_renewals": renewal_list,
+        "missing_obligations": missing_obs,
+        "billing_health": {
+            "total_obligations": total_obs,
+            "invoiced_obligations": invoiced_obs,
+            "failed_obligations": failed_obs,
+            "coverage_percentage": coverage_pct,
+        },
+    }
+
+    # 2. Check for configured LLM API provider
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("AI_API_KEY")
+    if not api_key:
+        return {
+            "configured": False,
+            "provider": None,
+            "message": "AI Revenue Analyst requires an API key. Set GEMINI_API_KEY or OPENAI_API_KEY in the backend environment to enable generative synthesis.",
+            "database_data": database_data,
+            "anomaly_summary": anomalies,
+            "answer": None,
+        }
+
+    # 3. Call LLM provider with verified context
+    import json
+    import httpx
+
+    system_prompt = (
+        "You are Brightloop AI Revenue Analyst, an enterprise financial intelligence assistant. "
+        "Answer the user's question using ONLY the provided verified database context below. "
+        "Never invent numbers. Do not hallucinate statistics. Keep answers direct, professional, and financially precise. "
+        "All currency values are in INR (₹).\n\n"
+        f"VERIFIED DATABASE CONTEXT:\n{json.dumps(database_data, indent=2)}\n\n"
+        f"DETECTED ANOMALIES:\n{json.dumps(anomalies, indent=2)}"
+    )
+
+    answer = None
+    provider_name = "unknown"
+
+    try:
+        if os.getenv("GEMINI_API_KEY") or api_key.startswith("AIza"):
+            provider_name = "gemini"
+            model = os.getenv("AI_MODEL", "gemini-1.5-flash")
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": f"{system_prompt}\n\nUSER QUESTION: {q_str}"}
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 600},
+            }
+            res = httpx.post(gemini_url, json=payload, timeout=12.0)
+            if res.status_code == 200:
+                res_data = res.json()
+                answer = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                answer = f"Gemini API returned status {res.status_code}: {res.text[:200]}"
+        else:
+            provider_name = "openai"
+            model = os.getenv("AI_MODEL", "gpt-4o-mini")
+            openai_url = "https://api.openai.com/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": q_str},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 600,
+            }
+            res = httpx.post(openai_url, json=payload, headers=headers, timeout=12.0)
+            if res.status_code == 200:
+                res_data = res.json()
+                answer = res_data["choices"][0]["message"]["content"]
+            else:
+                answer = f"OpenAI API returned status {res.status_code}: {res.text[:200]}"
+    except Exception as e:
+        answer = f"Error communicating with AI provider ({provider_name}): {str(e)}"
+
+    return {
+        "configured": True,
+        "provider": provider_name,
+        "message": "Analysis synthesized from verified transactional database records.",
+        "database_data": database_data,
+        "anomaly_summary": anomalies,
+        "answer": answer,
+    }
+
+
+
 class DemoIn(BaseModel):
     role: Literal["admin", "staff", "customer"] = "admin"
 

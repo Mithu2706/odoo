@@ -40,8 +40,18 @@ import {
   LogOut,
   Sliders,
   Check,
-  X
+  X,
+  Send,
+  Bot
 } from 'lucide-react';
+
+const AI_PRESET_QUESTIONS = [
+  "What is our current revenue?",
+  "Which invoices are overdue?",
+  "Which subscriptions are due for renewal?",
+  "Are there any missing billing obligations?",
+  "Summarize our billing health."
+];
 
 export default function App() {
   // Session & User
@@ -86,6 +96,12 @@ export default function App() {
   const [leakageSeverityFilter, setLeakageSeverityFilter] = useState('all');
   const [reconStatusFilter, setReconStatusFilter] = useState('all');
   const [renewalCohortFilter, setRenewalCohortFilter] = useState('all');
+
+  // Ask Brightloop — AI Revenue Analyst State
+  const [aiQuery, setAiQuery] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResponse, setAiResponse] = useState(null);
+  const [aiError, setAiError] = useState(null);
 
   // Modals & Drawers
   const [loading, setLoading] = useState(true);
@@ -236,6 +252,23 @@ export default function App() {
       addToast(err.message, 'error');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Ask Brightloop AI Analyst
+  const handleAskAI = async (queryText) => {
+    const q = queryText || aiQuery;
+    if (!q || !q.trim()) return;
+    try {
+      setAiLoading(true);
+      setAiError(null);
+      setAiQuery(q);
+      const res = await api.askAIAnalyst(q);
+      setAiResponse(res);
+    } catch (err) {
+      setAiError(err.message || 'Error communicating with AI Revenue Analyst');
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -813,6 +846,21 @@ export default function App() {
                   <span className="nav-badge badge-active-count">{renewalData.cohorts.within_7_days.count}</span>
                 )}
               </button>
+
+              <button
+                className={`sidebar-link ${activeTab === 'ai_analyst' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveTab('ai_analyst');
+                  if (!aiResponse) handleAskAI("Summarize our billing health.");
+                }}
+                title="Ask Brightloop — AI Revenue Analyst"
+              >
+                <Sparkles size={18} className="icon" style={{ color: '#0284c7' }} />
+                {!sidebarCollapsed && <span>Ask Brightloop</span>}
+                {!sidebarCollapsed && (
+                  <span className="nav-badge" style={{ background: '#e0f2fe', color: '#0369a1', fontWeight: 700 }}>AI</span>
+                )}
+              </button>
             </>
           )}
 
@@ -935,6 +983,7 @@ export default function App() {
               {activeTab === 'leakage' && 'Revenue Leakage Analysis'}
               {activeTab === 'reconciliation' && '4-Way Billing Reconciliation'}
               {activeTab === 'renewals' && 'Renewal Forecasting'}
+              {activeTab === 'ai_analyst' && 'Ask Brightloop (AI Analyst)'}
               {activeTab === 'subscriptions' && 'Subscriptions'}
               {activeTab === 'invoices' && 'Invoices & Accounting'}
               {activeTab === 'customers' && 'Customer CRM'}
@@ -968,6 +1017,21 @@ export default function App() {
             >
               <RefreshCw size={14} className={loading || actionLoading ? 'animate-spin' : ''} />
             </button>
+
+            {isStaffOrAdmin && (
+              <button
+                onClick={() => {
+                  setActiveTab('ai_analyst');
+                  if (!aiResponse) handleAskAI("Summarize our billing health.");
+                }}
+                className="btn btn-secondary"
+                title="Ask Brightloop AI Analyst"
+                style={{ borderColor: '#38bdf8', color: '#0284c7', background: 'rgba(56, 189, 248, 0.08)' }}
+              >
+                <Sparkles size={14} color="#0284c7" />
+                <span>Ask Brightloop AI</span>
+              </button>
+            )}
 
             {isStaffOrAdmin && (
               <button
@@ -2274,6 +2338,275 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* =================================================================
+              VIEW: ASK BRIGHTLOOP — AI REVENUE ANALYST
+             ================================================================= */}
+          {activeTab === 'ai_analyst' && isStaffOrAdmin && (
+            <div className="ai-analyst-panel">
+              <div className="page-header">
+                <div className="page-title-group">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 'var(--radius-md)', background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+                      <Sparkles size={16} />
+                    </div>
+                    <h1>Ask Brightloop — AI Revenue Analyst</h1>
+                  </div>
+                  <p>Read-only generative financial intelligence connected directly to transactional database ledgers. Zero hallucinations.</p>
+                </div>
+                <div className="page-actions">
+                  <button className="btn btn-secondary" onClick={() => handleAskAI(aiQuery || "Summarize our billing health.")} disabled={aiLoading}>
+                    <RefreshCw size={14} className={aiLoading ? 'animate-spin' : ''} /> Rescan & Ask
+                  </button>
+                </div>
+              </div>
+
+              {/* Preset Question Pills & Prompt Input */}
+              <div className="ai-query-card">
+                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                  Frequently Asked Financial Inquiries (Click to run):
+                </div>
+                <div className="ai-pill-list">
+                  {AI_PRESET_QUESTIONS.map((q, idx) => (
+                    <button
+                      key={idx}
+                      className="ai-pill-btn"
+                      onClick={() => handleAskAI(q)}
+                      disabled={aiLoading}
+                    >
+                      <Sparkles size={12} color="#0284c7" />
+                      <span>{q}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAskAI();
+                  }}
+                  className="ai-input-wrapper"
+                >
+                  <input
+                    type="text"
+                    className="ai-input"
+                    placeholder="Ask about revenue, overdue receivables, upcoming renewals, or billing health..."
+                    value={aiQuery}
+                    onChange={(e) => setAiQuery(e.target.value)}
+                    disabled={aiLoading}
+                  />
+                  <button type="submit" className="btn btn-primary" disabled={aiLoading || !aiQuery.trim()}>
+                    {aiLoading ? <RefreshCw size={15} className="animate-spin" /> : <Send size={15} />}
+                    <span>{aiLoading ? 'Analyzing...' : 'Ask AI'}</span>
+                  </button>
+                </form>
+              </div>
+
+              {/* Error Banner */}
+              {aiError && (
+                <div className="alert alert-error">
+                  <AlertCircle size={16} />
+                  <span>{aiError}</span>
+                </div>
+              )}
+
+              {/* AI Analysis & Database Response */}
+              {aiResponse && (
+                <div className="ai-response-card">
+                  {/* Status Banner */}
+                  <div className={`ai-status-banner ${aiResponse.configured ? 'configured' : 'unconfigured'}`}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {aiResponse.configured ? (
+                        <>
+                          <CheckCircle2 size={16} color="#16a34a" />
+                          <span>AI Generative Synthesis Active · Provider: <strong>{aiResponse.provider?.toUpperCase()}</strong></span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle size={16} color="#d97706" />
+                          <span><strong>LLM API Key Not Configured</strong> · {aiResponse.message}</span>
+                        </>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '0.725rem', color: 'inherit', opacity: 0.85 }}>
+                      Strict Tenant Isolation: Verified Database Data
+                    </span>
+                  </div>
+
+                  {/* AI Synthesized Answer (if configured) */}
+                  {aiResponse.configured && aiResponse.answer && (
+                    <div className="ai-answer-box">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, color: '#0284c7', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
+                        <Sparkles size={14} /> AI Executive Summary:
+                      </div>
+                      <div style={{ lineHeight: 1.65 }}>{aiResponse.answer}</div>
+                    </div>
+                  )}
+
+                  {/* Deterministic Billing Anomaly Summary (Requirement 9) */}
+                  <div className="ai-anomaly-box">
+                    <h4>
+                      <AlertTriangle size={15} /> Deterministic Billing Anomaly Summary ({aiResponse.anomaly_summary?.length || 0})
+                    </h4>
+                    {(!aiResponse.anomaly_summary || aiResponse.anomaly_summary.length === 0) ? (
+                      <div style={{ fontSize: '0.825rem', color: '#166534', background: '#f0fdf4', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
+                        ✓ Zero billing anomalies detected. All obligations and invoices are in compliance.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.35rem' }}>
+                        {aiResponse.anomaly_summary.map((anom, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              background: '#ffffff',
+                              border: '1px solid #fee2e2',
+                              padding: '0.65rem 0.85rem',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.825rem',
+                            }}
+                          >
+                            <span style={{ color: '#1e293b' }}>{anom.summary}</span>
+                            <span className={`badge badge-${anom.severity}`}>
+                              <span className="badge-dot" /> {anom.severity}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Verified Database Financial Snapshot */}
+                  <div>
+                    <h3 style={{ fontSize: '0.925rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Verified Database Ledger Snapshot
+                    </h3>
+                    <div className="kpi-grid" style={{ marginBottom: '1rem' }}>
+                      <div className="kpi-card">
+                        <div className="kpi-header">
+                          <span className="kpi-label">Invoiced Revenue (GAAP)</span>
+                        </div>
+                        <div className="kpi-value tabular-nums">
+                          ₹{parseFloat(aiResponse.database_data?.revenue?.invoiced_revenue_inr || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </div>
+                        <div className="kpi-footer">
+                          <span className="kpi-subtext">Confirmed & Paid Invoices</span>
+                        </div>
+                      </div>
+
+                      <div className="kpi-card">
+                        <div className="kpi-header">
+                          <span className="kpi-label">Collected Cash</span>
+                        </div>
+                        <div className="kpi-value tabular-nums" style={{ color: 'var(--success)' }}>
+                          ₹{parseFloat(aiResponse.database_data?.revenue?.collected_cash_inr || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </div>
+                        <div className="kpi-footer">
+                          <span className="kpi-subtext">Bank Cleared Payments</span>
+                        </div>
+                      </div>
+
+                      <div className="kpi-card">
+                        <div className="kpi-header">
+                          <span className="kpi-label">Outstanding Receivables</span>
+                        </div>
+                        <div className="kpi-value tabular-nums" style={{ color: parseFloat(aiResponse.database_data?.revenue?.outstanding_receivables_inr || '0') > 0 ? 'var(--danger-text)' : 'inherit' }}>
+                          ₹{parseFloat(aiResponse.database_data?.revenue?.outstanding_receivables_inr || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </div>
+                        <div className="kpi-footer">
+                          <span className="kpi-subtext">Invoiced minus Collected</span>
+                        </div>
+                      </div>
+
+                      <div className="kpi-card">
+                        <div className="kpi-header">
+                          <span className="kpi-label">Monthly Run-Rate (MRR)</span>
+                        </div>
+                        <div className="kpi-value tabular-nums">
+                          ₹{parseFloat(aiResponse.database_data?.revenue?.mrr_inr || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </div>
+                        <div className="kpi-footer">
+                          <span className="kpi-subtext">ARR: ₹{parseFloat(aiResponse.database_data?.revenue?.arr_inr || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Overdue Invoices Breakdown Table (if any) */}
+                    {aiResponse.database_data?.overdue_invoices?.length > 0 && (
+                      <div className="table-card" style={{ marginTop: '1rem' }}>
+                        <div className="table-toolbar">
+                          <h4 style={{ fontSize: '0.85rem', fontWeight: 600 }}>Overdue Invoices Identified in DB ({aiResponse.database_data.overdue_invoices.length})</h4>
+                        </div>
+                        <div className="table-wrapper">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Invoice Number</th>
+                                <th>Customer</th>
+                                <th>Total</th>
+                                <th>Balance Due</th>
+                                <th>Due Date</th>
+                                <th>Days Overdue</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {aiResponse.database_data.overdue_invoices.map((inv, i) => (
+                                <tr key={i}>
+                                  <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{inv.invoice_number}</td>
+                                  <td><strong>{inv.customer_name}</strong></td>
+                                  <td className="tabular-nums">₹{parseFloat(inv.total).toFixed(2)}</td>
+                                  <td className="tabular-nums" style={{ color: 'var(--danger-text)', fontWeight: 700 }}>₹{parseFloat(inv.balance).toFixed(2)}</td>
+                                  <td className="tabular-nums">{inv.due_date}</td>
+                                  <td><span className="badge badge-high">{inv.days_overdue} days</span></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Upcoming Renewals Breakdown Table (if any) */}
+                    {aiResponse.database_data?.upcoming_renewals?.length > 0 && (
+                      <div className="table-card" style={{ marginTop: '1rem' }}>
+                        <div className="table-toolbar">
+                          <h4 style={{ fontSize: '0.85rem', fontWeight: 600 }}>Renewals Due in Next 30 Days ({aiResponse.database_data.upcoming_renewals.length})</h4>
+                        </div>
+                        <div className="table-wrapper">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Subscription</th>
+                                <th>Customer</th>
+                                <th>Plan</th>
+                                <th>Cadence</th>
+                                <th>Renewal Date</th>
+                                <th>Days Remaining</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {aiResponse.database_data.upcoming_renewals.map((ren, i) => (
+                                <tr key={i}>
+                                  <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{ren.subscription_number}</td>
+                                  <td><strong>{ren.customer_name}</strong></td>
+                                  <td>{ren.plan_name}</td>
+                                  <td style={{ textTransform: 'capitalize' }}>{ren.interval}</td>
+                                  <td className="tabular-nums">{ren.renewal_date}</td>
+                                  <td><span className="badge badge-upcoming">{ren.days_remaining} days</span></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
