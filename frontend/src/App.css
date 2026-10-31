@@ -1485,3 +1485,183 @@ input, select, textarea {
     display: none;
   }
 }
+
+/* ==========================================================================
+   Enterprise Maturity Modules: Leakage, Reconciliation, Renewals, GAAP
+   ========================================================================== */
+.badge-critical {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+.badge-critical .badge-dot { background-color: #dc2626; }
+
+.badge-high {
+  background-color: #ffedd5;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+.badge-high .badge-dot { background-color: #ea580c; }
+
+.badge-medium {
+  background-color: #fef9c3;
+  color: #854d0e;
+  border: 1px solid #fde047;
+}
+.badge-medium .badge-dot { background-color: #ca8a04; }
+
+.badge-low {
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+.badge-low .badge-dot { background-color: #64748b; }
+
+.badge-fully_reconciled {
+  background-color: var(--success-bg);
+  color: var(--success-text);
+  border: 1px solid var(--success-border);
+}
+.badge-fully_reconciled .badge-dot { background-color: var(--success); }
+
+.badge-partially_reconciled {
+  background-color: var(--warning-bg);
+  color: var(--warning-text);
+  border: 1px solid var(--warning-border);
+}
+.badge-partially_reconciled .badge-dot { background-color: var(--warning); }
+
+.badge-pending_collection {
+  background-color: var(--info-bg);
+  color: var(--info-text);
+  border: 1px solid var(--info-border);
+}
+.badge-pending_collection .badge-dot { background-color: var(--info); }
+
+.badge-unfulfilled_obligation {
+  background-color: var(--danger-bg);
+  color: var(--danger-text);
+  border: 1px solid var(--danger-border);
+}
+.badge-unfulfilled_obligation .badge-dot { background-color: var(--danger); }
+
+.badge-urgent {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  font-weight: 700;
+}
+.badge-urgent .badge-dot { background-color: #dc2626; }
+
+.badge-upcoming {
+  background-color: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+.badge-upcoming .badge-dot { background-color: #3b82f6; }
+
+.badge-pipeline {
+  background-color: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+.badge-pipeline .badge-dot { background-color: #94a3b8; }
+
+.gaap-banner {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #f8fafc;
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid #334155;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+.gaap-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.gaap-banner-header h3 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+}
+
+.gaap-banner-header .gaap-pill {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.5rem;
+  background-color: #0284c7;
+  color: #ffffff;
+  border-radius: var(--radius-sm);
+}
+
+.gaap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.gaap-def-card {
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  transition: all 0.15s ease;
+}
+
+.gaap-def-card:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.gaap-def-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  margin-bottom: 0.35rem;
+}
+
+.gaap-def-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 0.35rem;
+}
+
+.gaap-def-desc {
+  font-size: 0.725rem;
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+
+.zero-leakage-card {
+  background-color: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.zero-leakage-card h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #166534;
+  margin-bottom: 0.35rem;
+}
+
+.zero-leakage-card p {
+  font-size: 0.85rem;
+  color: #15803d;
+  max-width: 580px;
+  margin: 0 auto;
+}

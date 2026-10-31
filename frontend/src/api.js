@@ -193,4 +193,30 @@ export const api = {
     });
     return handleResponse(res);
   },
+
+  // Enterprise Maturity Modules
+  getRevenueLeakage: async () => {
+    const res = await fetch(`${API_BASE}/api/assurance/leakage`, {
+      credentials: 'include',
+    });
+    return handleResponse(res);
+  },
+  getBillingReconciliation: async () => {
+    const res = await fetch(`${API_BASE}/api/assurance/reconciliation`, {
+      credentials: 'include',
+    });
+    return handleResponse(res);
+  },
+  getRenewalIntelligence: async () => {
+    const res = await fetch(`${API_BASE}/api/analytics/renewals`, {
+      credentials: 'include',
+    });
+    return handleResponse(res);
+  },
+  getAnalyticsSummary: async () => {
+    const res = await fetch(`${API_BASE}/api/analytics/summary`, {
+      credentials: 'include',
+    });
+    return handleResponse(res);
+  },
 };

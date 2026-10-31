@@ -140,59 +140,47 @@ Access control is strictly validated in backend dependencies (`get_current_user`
 
 ---
 
-## Core Functional Modules
+## Enterprise Product Modules
 
-### 1. Subscription Management
-- **Product & Variant Catalog**: Define products with recurring or usage models; add price-adjusting variants (e.g. storage tiers, regional add-ons).
-- **Flexible Billing Plans**: Support daily, weekly, monthly, and yearly recurring intervals with custom base plan fees and minimum quantity constraints.
-- **Calendar-Anchored Billing**: Month-end alignment (e.g., January 31st renews February 28th/29th and restores March 31st) prevents date drift across cycles.
-- **Full Lifecycle Operations**: Transition states between `draft`, `quotation`, `confirmed`, `active`, `paused`, and `closed`.
+Brightloop is organized into four cohesive enterprise pillars designed for complete visibility and control over recurring revenue:
 
-### 2. Recurring Billing Engine
-- **Obligation Generation**: Evaluates active subscriptions and creates missing `BillingObligation` cycles.
-- **Idempotent Scheduler**: `POST /api/assurance/scheduler/run` processes pending due cycles within transactional locks. Repeated executions produce 0 duplicate invoices.
-- **Missed Cycle Protection**: Catches up historical unbilled cycles sequentially rather than dropping or grouping them incorrectly.
+### Pillar A: Revenue Operations
+- **Subscription Management**: Full contract lifecycle state machine (`draft`, `quotation`, `confirmed`, `active`, `paused`, `closed`) with calendar-anchored month-end alignment (Jan 31st ➔ Feb 28th/29th ➔ Mar 31st).
+- **Customer CRM**: Centralized directory tracking corporate accounts, primary contacts, active contract counts, and lifetime revenue contributions.
+- **Product & Pricing Management**: Product catalog with recurring plans (daily, weekly, monthly, yearly), base license fees, and minimum seat quantities.
+- **Invoices & Payments**: Confirmed invoice generation, itemized tax computations (18% GST), idempotent payment recording, overpayment prevention, and transparent calculation receipts.
+- **Customer Self-Service Portal**: Role-isolated portal enabling clients to browse plans, self-subscribe, inspect calculation receipts, and manage subscription statuses.
 
-### 3. Billing Assurance Center
-- **Billing Coverage Monitor**: Live dashboard quantifying:
-  - Total expected obligations
-  - Invoiced cycles
-  - Missing or skipped invoices
-  - Prevented duplicate attempts
-  - Delayed cycles (past due without invoice)
-  - Active subscriptions pending future renewal
-- **Calculation Receipt**: `GET /api/invoices/{id}/receipt` delivers an itemized audit statement displaying:
-  - Base plan fee
-  - Variant adjustments and line items
-  - Quantities and line subtotals
-  - Tax calculation and rounding method
-  - Mathematical verification statement (`subtotal + tax = total`)
-- **Recovery Console**: Identifies all failed billing obligations with error messages, attempt counts, and an authorized `POST /api/assurance/obligations/{id}/retry` action.
-- **Reliability Testing Center**: Interactive sandbox for operators to trigger and observe:
-  1. *Duplicate Scheduler Execution*: Validates zero duplicate invoices when fired twice simultaneously.
-  2. *Simulated Billing Failure*: Verifies obligation transition to `failed` state and appearance in Recovery Console.
-  3. *Delayed Invoice Detection*: Flags overdue unbilled obligations.
-  4. *Customer Authorization Barrier*: Proves customer tokens cannot invoke privileged assurance endpoints (returns 403 Forbidden).
+### Pillar B: Revenue Assurance
+- **Billing Coverage Monitor**: Quantifies expected vs. generated invoices, prevented duplicate billing attempts, delayed cycles, and active subscriptions pending renewal.
+- **Revenue Leakage Analysis (`/api/assurance/leakage`)**: Continuous audit engine scanning database records to detect and triage:
+  1. *Unbilled Contract Cycles*: Due obligations where invoice generation has not fired.
+  2. *Active Contracts Missing Obligations*: Active subscriptions lacking scheduled future ledger obligations.
+  3. *Overdue Receivables*: Confirmed invoices unpaid beyond due dates categorized by aging severity.
+  4. *Calculation Inconsistencies*: Audits subtotal + tax math precision with strict `Decimal` validation.
+  - Every detected issue displays Customer, Contract/Invoice Ref, Expected Amount, Actual Amount, Difference (At Risk), Detection Date, Severity (`critical`, `high`, `medium`), and Recommended Remediation.
+- **4-Way Billing Reconciliation Ledger (`/api/assurance/reconciliation`)**: Continuous ledger matching:
+  - `Expected Obligation` ➔ `Generated Invoice` ➔ `Recorded Payment` ➔ `Outstanding Balance`.
+  - Reconciles every cycle into formal states: `fully_reconciled`, `partially_reconciled`, `pending_collection`, and `unfulfilled_obligation`.
+- **Payment Recovery Console**: Pinpoints failed billing cycles with stack diagnostic traces, failure classifications, attempt counters, and one-click safe retry actions.
+- **Reliability Testing Center**: Interactive sandbox executing simulated worker crashes, duplicate scheduler runs, delayed invoice scans, and customer authorization barrier checks.
 
-### 4. Payments & Accounting
-- **Payment Recording**: Accept full and partial payments against confirmed invoices.
-- **Overpayment Prevention**: Rejects payment amounts exceeding the invoice outstanding balance.
-- **Clear Sandbox Workflow**: Explicitly labeled demo/manual payment recording without deceptive claims of live payment gateway execution.
-- **Audit Logging**: Every financial action records timestamped actor details, IP, workspace, and entity identifiers.
+### Pillar C: Business Intelligence
+- **GAAP Revenue Analytics (`/api/analytics/summary`)**: Explicit financial distinction that never blends accounting concepts:
+  - *Invoiced Revenue (GAAP Accrual)*: Total billed revenue on confirmed and paid invoices (formal legal debtor claim).
+  - *Collected Cash (Liquid Realized)*: Actual cleared payments in bank accounts with zero accrual default risk.
+  - *Recurring Run-Rate (ARR / MRR)*: Normalized annual/monthly recurring contract value calculated from active subscriptions.
+  - *Outstanding Receivables*: `Invoiced Revenue − Collected Cash`.
+- **Renewal Intelligence & Forecasting (`/api/analytics/renewals`)**: Cohort-based forward pipeline projecting:
+  - *7-Day Cohort (Urgent)*: Imminent renewals requiring payment authorization notices.
+  - *30-Day Cohort*: Current monthly recurring billing volume pipeline.
+  - *60-Day Cohort*: Forward quarterly revenue forecasting.
+- **Customer Retention & Churn**: Contract renewal rate and lifecycle attrition tracking calculated directly from transactional records.
 
-### 5. Executive Dashboard
-- **Real-Time KPIs**: Calculated directly from SQL aggregations:
-  - Total Collected Revenue
-  - Monthly Recurring Revenue (MRR)
-  - Active, Paused, and Closed Subscriptions
-  - Outstanding & Overdue Invoice Balances
-  - Billing Coverage Percentage
-- **Revenue & Cycle History**: Visual breakdown of collections over time.
-
-### 6. Customer Self-Service Portal
-- **Streamlined Portal UI**: Dedicated customer interface displaying only personal subscriptions, invoices, and receipts.
-- **Plan Discovery & Subscription**: Customers can browse catalog plans and self-subscribe via `POST /api/subscriptions/subscribe`.
-- **Self-Service Controls**: Pause, resume, or request cancellation of their active subscriptions.
+### Pillar D: Administration
+- **Team & Permissions**: Granular role-based access control (Admin, Staff, Customer) with workspace-scoped permissions.
+- **System Audit Trail (`AuditLog`)**: Immutable transactional log recording actor name, role, IP, timestamp, action type, entity identifier, and operational details.
+- **Workspace Settings**: Currency standards (INR ₹), half-up rounding guarantees (`ROUND_HALF_UP`), row-level concurrency lock assertions (`SELECT FOR UPDATE`), and tenant isolation parameters.
 
 ---
 
@@ -374,11 +362,17 @@ python -m alembic upgrade head
 - `POST   /api/records/payments` — Record full or partial payment against an invoice.
 - `GET    /api/records/payments` — List payment history.
 
-### Billing Assurance & Reliability
-- `GET    /api/assurance/monitor` — Retrieve coverage statistics and ledger records.
+### Billing Assurance & Revenue Operations
+- `GET    /api/assurance/summary` — Retrieve coverage statistics and ledger records.
+- `GET    /api/assurance/leakage` — Full algorithmic revenue leakage audit (unbilled cycles, missing obligations, overdue receivables, math discrepancies).
+- `GET    /api/assurance/reconciliation` — 4-way billing reconciliation ledger comparing obligations ➔ invoices ➔ payments ➔ balances.
 - `POST   /api/assurance/scheduler/run` — Run idempotent billing scheduler across all due subscriptions.
 - `POST   /api/assurance/obligations/{id}/retry` — Safely retry a failed billing obligation.
 - `POST   /api/assurance/test-scenario` — Execute controlled reliability test scenarios (`scheduler_duplicate_execution`, `simulate_billing_failure`, `delayed_invoice_detection`, `unauthorized_customer_barrier`).
+
+### Business Intelligence & Forecasting
+- `GET    /api/analytics/summary` — GAAP-segregated financial reporting (Invoiced Accrual vs Realized Cash vs Recurring ARR/MRR run-rate).
+- `GET    /api/analytics/renewals` — Renewal forecasting cohorts (7-day, 30-day, 60-day) with projected cash pipeline.
 
 ---
 
@@ -390,14 +384,22 @@ From the `backend/` directory:
 python -m pytest -v
 ```
 
-**Test Coverage Summary**:
-- `test_billing_assurance_workflow` — Verifies obligation ledger creation, scheduler invoice generation, duplicate prevention, and retry mechanics.
-- `test_assurance_customer_authorization` — Verifies strict 403 Forbidden responses when customer tokens attempt to access internal assurance controls.
-- `test_assurance_workspace_isolation` — Ensures cross-tenant leakage is impossible between distinct workspaces.
-- `test_customer_portal_and_subscription_lifecycle` — Verifies customer self-service subscription, pause, resume, and cancellation.
-- `test_calculation_receipt_and_reliability_testing_center` — Verifies receipt mathematical integrity (`subtotal + tax == total`) and reliability test scenarios.
-- `test_migration_round_trip` — Verifies Alembic schema upgrade head and downgrade round trip.
-- `test_workflow.py` — Complete financial workflow suite (calendar anchors, price snapshotting, overpayment rejection, session expiration, duplicate emails).
+**Test Coverage Summary (18 Passed, 1 Skipped on SQLite)**:
+- `test_enterprise_maturity.py`:
+  - `test_revenue_leakage_analysis`: Verifies unbilled cycle detection, overdue receivable flagging, severity triage, and mathematical discrepancy audit.
+  - `test_billing_reconciliation_ledger`: Verifies 4-way ledger balancing between obligations, invoices, payments, and outstanding balances.
+  - `test_renewal_intelligence_cohorts`: Validates forward renewal forecasting across 7-day, 30-day, and 60-day pipelines.
+  - `test_financial_analytics_summary_gaap`: Confirms strict mathematical separation between GAAP Accrual Invoiced Revenue, Realized Cash, and Recurring ARR/MRR run-rate.
+- `test_assurance.py`:
+  - `test_billing_assurance_workflow`: Verifies obligation ledger creation, scheduler invoice generation, duplicate prevention, and retry mechanics.
+  - `test_assurance_customer_authorization`: Verifies strict 403 Forbidden responses when customer tokens attempt to access internal assurance controls.
+  - `test_assurance_workspace_isolation`: Ensures cross-tenant leakage is impossible between distinct workspaces.
+  - `test_customer_portal_and_subscription_lifecycle`: Verifies customer self-service subscription, pause, resume, and cancellation.
+  - `test_calculation_receipt_and_reliability_testing_center`: Verifies receipt mathematical integrity (`subtotal + tax == total`) and reliability test scenarios.
+- `test_migrations.py`:
+  - `test_migration_round_trip`: Verifies Alembic schema upgrade head and downgrade round trip.
+- `test_workflow.py`:
+  - Complete financial workflow suite (calendar anchors, price snapshotting, overpayment rejection, session expiration, duplicate emails).
 
 ### 2. Frontend Production Build Check
 From the `frontend/` directory:
