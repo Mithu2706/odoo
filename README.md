@@ -373,7 +373,6 @@ python -m alembic upgrade head
 ### Business Intelligence & Forecasting
 - `GET    /api/analytics/summary` — GAAP-segregated financial reporting (Invoiced Accrual vs Realized Cash vs Recurring ARR/MRR run-rate).
 - `GET    /api/analytics/renewals` — Renewal forecasting cohorts (7-day, 30-day, 60-day) with projected cash pipeline.
-- `POST   /api/ai/analyst` — **Ask Brightloop AI Revenue Analyst**: Read-only generative intelligence synthesizing actual transactional database records with deterministic anomaly detection (restricted to Admin & Staff).
 
 ---
 
@@ -385,11 +384,7 @@ From the `backend/` directory:
 python -m pytest -v
 ```
 
-**Test Coverage Summary (21 Passed, 1 Skipped on SQLite)**:
-- `test_ai_analyst.py`:
-  - `test_ai_analyst_unconfigured`: Validates clear configuration message and verified database context when LLM API keys are unset.
-  - `test_ai_analyst_customer_forbidden`: Enforces role-based isolation blocking customer tokens with 403 Forbidden.
-  - `test_ai_analyst_mock_llm`: Verifies generative synthesis and deterministic anomaly aggregation.
+**Test Coverage Summary (18 Passed, 1 Skipped on SQLite)**:
 - `test_enterprise_maturity.py`:
   - `test_revenue_leakage_analysis`: Verifies unbilled cycle detection, overdue receivable flagging, severity triage, and mathematical discrepancy audit.
   - `test_billing_reconciliation_ledger`: Verifies 4-way ledger balancing between obligations, invoices, payments, and outstanding balances.

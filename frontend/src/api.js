@@ -219,13 +219,4 @@ export const api = {
     });
     return handleResponse(res);
   },
-  askAIAnalyst: async (query) => {
-    const res = await fetch(`${API_BASE}/api/ai/analyst`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-      credentials: 'include',
-    });
-    return handleResponse(res);
-  },
 };
