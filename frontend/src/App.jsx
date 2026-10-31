@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { api } from './api';
 import './App.css';
+import LandingPage from './LandingPage';
 import {
   LayoutDashboard,
   ShieldCheck,
@@ -45,6 +46,12 @@ import {
 export default function App() {
   // Session & User
   const [currentUser, setCurrentUser] = useState(null);
+  const [viewMode, setViewMode] = useState(() => {
+    if (window.location.hash === '#app' || window.location.pathname.startsWith('/app')) {
+      return 'app';
+    }
+    return 'landing';
+  });
   const [activeTab, setActiveTab] = useState('overview');
   // 'overview' | 'assurance' | 'subscriptions' | 'invoices' | 'customers' | 'products' | 'reports' | 'team' | 'audit' | 'settings' | 'portal_plans'
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -558,6 +565,18 @@ export default function App() {
   const historyData = dashboard?.history || [];
   const maxHistoryAmount = Math.max(...historyData.map((h) => parseFloat(h.amount) || 0), 100);
 
+  if (viewMode === 'landing') {
+    return (
+      <LandingPage
+        onLaunchApp={() => setViewMode('app')}
+        onDemoLogin={async (role) => {
+          await switchRole(role);
+          setViewMode('app');
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app-layout">
       {/* Toast Notification Container */}
@@ -775,12 +794,39 @@ export default function App() {
             >
               Customer
             </button>
+            <button
+              className="sandbox-role-btn"
+              style={{ marginLeft: '0.5rem', borderColor: '#475569', color: '#cbd5e1' }}
+              onClick={() => setViewMode('landing')}
+              title="Return to Art-Directed Marketing Website"
+            >
+              ← Marketing Website
+            </button>
           </div>
         </div>
 
         {/* Top Header */}
         <header className="app-header">
           <div className="header-breadcrumbs">
+            <button
+              onClick={() => setViewMode('landing')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--primary)',
+                fontWeight: 600,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                padding: '0 0.35rem 0 0',
+              }}
+              title="Return to Marketing Website"
+            >
+              ✦ Marketing Site
+            </button>
+            <span className="separator">/</span>
             <span>Brightloop</span>
             <span className="separator">/</span>
             <span>Acme Systems</span>
